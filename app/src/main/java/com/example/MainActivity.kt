@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.RssFeed
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Sync
@@ -65,6 +66,7 @@ import com.example.ui.components.ConfigDetailDialog
 import com.example.ui.screens.ConfigsScreen
 import com.example.ui.screens.ExportScreen
 import com.example.ui.screens.PingScreen
+import com.example.ui.screens.ProxyConnectionScreen
 import com.example.ui.screens.SourcesScreen
 import com.example.ui.theme.CyberCyan
 import com.example.ui.theme.CyberGreen
@@ -184,10 +186,29 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                 containerColor = MaterialTheme.colorScheme.surface,
                 modifier = Modifier.testTag("bottom_nav_bar")
             ) {
-                // Tab 0: Configs
+                // Tab 0: Connect (Flutter-Inspired Proxy Connection Screen)
                 NavigationBarItem(
                     selected = uiState.selectedTab == 0,
                     onClick = { viewModel.selectTab(0) },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.PowerSettingsNew,
+                            contentDescription = "Connect",
+                            tint = if (uiState.isConnected) CyberGreen else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    label = { Text("Connect", fontSize = 11.sp) },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                        indicatorColor = MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    modifier = Modifier.testTag("nav_item_connect")
+                )
+
+                // Tab 1: Configs / Nodes
+                NavigationBarItem(
+                    selected = uiState.selectedTab == 1,
+                    onClick = { viewModel.selectTab(1) },
                     icon = {
                         BadgedBox(badge = {
                             if (filteredConfigs.isNotEmpty()) {
@@ -213,10 +234,10 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                     modifier = Modifier.testTag("nav_item_configs")
                 )
 
-                // Tab 1: Sources
+                // Tab 2: Sources / Feeds
                 NavigationBarItem(
-                    selected = uiState.selectedTab == 1,
-                    onClick = { viewModel.selectTab(1) },
+                    selected = uiState.selectedTab == 2,
+                    onClick = { viewModel.selectTab(2) },
                     icon = {
                         Icon(imageVector = Icons.Default.RssFeed, contentDescription = "Feeds")
                     },
@@ -228,10 +249,10 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                     modifier = Modifier.testTag("nav_item_feeds")
                 )
 
-                // Tab 2: Speed / Ping
+                // Tab 3: Speed / Ping
                 NavigationBarItem(
-                    selected = uiState.selectedTab == 2,
-                    onClick = { viewModel.selectTab(2) },
+                    selected = uiState.selectedTab == 3,
+                    onClick = { viewModel.selectTab(3) },
                     icon = {
                         Icon(imageVector = Icons.Default.Speed, contentDescription = "Ping Test")
                     },
@@ -243,10 +264,10 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                     modifier = Modifier.testTag("nav_item_speed")
                 )
 
-                // Tab 3: Export & Tools
+                // Tab 4: Export & Tools
                 NavigationBarItem(
-                    selected = uiState.selectedTab == 3,
-                    onClick = { viewModel.selectTab(3) },
+                    selected = uiState.selectedTab == 4,
+                    onClick = { viewModel.selectTab(4) },
                     icon = {
                         Icon(imageVector = Icons.Default.FileDownload, contentDescription = "Export")
                     },
@@ -267,7 +288,19 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                 .padding(innerPadding)
         ) {
             when (uiState.selectedTab) {
-                0 -> ConfigsScreen(
+                0 -> ProxyConnectionScreen(
+                    isConnected = uiState.isConnected,
+                    isConnecting = uiState.isConnecting,
+                    connectedConfig = uiState.connectedConfig,
+                    allConfigs = rawConfigs,
+                    logs = uiState.connectionLogs,
+                    isSelectingBestNode = uiState.isSelectingBestNode,
+                    onToggleConnection = { viewModel.toggleConnection() },
+                    onSelectNode = { viewModel.connectToConfig(it) },
+                    onSelectBestNode = { viewModel.selectAndConnectBestNode() },
+                    onClearLogs = { viewModel.clearLogs() }
+                )
+                1 -> ConfigsScreen(
                     configs = filteredConfigs,
                     uiState = uiState,
                     onSearchChange = { viewModel.setSearchQuery(it) },
@@ -278,9 +311,12 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                     onPingConfig = { viewModel.pingConfig(it) },
                     onToggleFavorite = { viewModel.toggleFavorite(it) },
                     onCopyConfig = { viewModel.copyToClipboard(context, it) },
-                    onSyncAll = { viewModel.syncAllSources() }
+                    onSyncAll = { viewModel.syncAllSources() },
+                    onToggleConnection = { viewModel.toggleConnection() },
+                    onSelectBestNode = { viewModel.selectAndConnectBestNode() },
+                    onConnectNode = { viewModel.connectToConfig(it) }
                 )
-                1 -> SourcesScreen(
+                2 -> SourcesScreen(
                     sources = subscriptions,
                     isSyncing = uiState.isSyncing,
                     onAddSource = { viewModel.openAddSourceDialog() },
@@ -290,10 +326,19 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                     onSyncSource = { viewModel.syncSource(it) },
                     onSyncAll = { viewModel.syncAllSources() }
                 )
-                2 -> PingScreen(
+                3 -> PingScreen(
                     configs = rawConfigs,
                     isPingingAll = uiState.isPingingAll,
                     pingProgress = uiState.pingProgress,
+                    selectedPingMethod = uiState.selectedPingMethod,
+                    onSelectPingMethod = { viewModel.setPingMethod(it) },
+                    isConnected = uiState.isConnected,
+                    isConnecting = uiState.isConnecting,
+                    connectedConfig = uiState.connectedConfig,
+                    connectionDurationSeconds = uiState.connectionDurationSeconds,
+                    isSelectingBestNode = uiState.isSelectingBestNode,
+                    onToggleConnection = { viewModel.toggleConnection() },
+                    onSelectBestNode = { viewModel.selectAndConnectBestNode() },
                     onPingAll = { viewModel.pingAllVisibleConfigs() },
                     onPingSingle = { viewModel.pingConfig(it) },
                     onCopySingle = { viewModel.copyToClipboard(context, it) },
@@ -302,7 +347,7 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                         viewModel.copyToClipboard(context, text, "Top 10 Fastest V2Ray Nodes")
                     }
                 )
-                3 -> ExportScreen(
+                4 -> ExportScreen(
                     configs = rawConfigs,
                     onCopyAll = { asBase64 -> viewModel.copyAllMerged(context, asBase64) },
                     onShareAll = { asBase64 -> viewModel.shareConfigs(context, asBase64) },

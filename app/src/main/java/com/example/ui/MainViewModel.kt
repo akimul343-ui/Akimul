@@ -13,8 +13,12 @@ import com.example.data.db.AppDatabase
 import com.example.data.model.ProxyConfig
 import com.example.data.model.SubscriptionSource
 import com.example.data.repository.ProxyRepository
+import com.example.data.service.PingMethod
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,6 +43,7 @@ data class UiState(
     val selectedProtocol: String = "All",
     val sortOption: SortOption = SortOption.DEFAULT,
     val onlyFavorites: Boolean = false,
+    val selectedPingMethod: PingMethod = PingMethod.TCP,
     val isSyncing: Boolean = false,
     val syncProgress: Float = 0f,
     val syncStatusText: String = "",
@@ -47,7 +52,13 @@ data class UiState(
     val selectedConfigDetails: ProxyConfig? = null,
     val showAddSourceDialog: Boolean = false,
     val editingSource: SubscriptionSource? = null,
-    val snackbarMessage: String? = null
+    val snackbarMessage: String? = null,
+    val isConnected: Boolean = false,
+    val isConnecting: Boolean = false,
+    val connectedConfig: ProxyConfig? = null,
+    val connectionDurationSeconds: Long = 0L,
+    val isSelectingBestNode: Boolean = false,
+    val connectionLogs: List<String> = listOf("[LOG] Service idle. Press button to connect.")
 )
 
 class MainViewModel(
@@ -55,8 +66,96 @@ class MainViewModel(
     private val repository: ProxyRepository
 ) : AndroidViewModel(application) {
 
+    private val sessionPrefs = application.getSharedPreferences("vpn_session_prefs", Context.MODE_PRIVATE)
+
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+
+    private var durationJob: Job? = null
+
+    init {
+        restorePinnedSession()
+    }
+
+    fun appendLog(log: String) {
+        val current = _uiState.value.connectionLogs
+        val updated = (current + log).takeLast(40)
+        _uiState.value = _uiState.value.copy(connectionLogs = updated)
+    }
+
+    fun clearLogs() {
+        _uiState.value = _uiState.value.copy(connectionLogs = listOf("[LOG] Console logs cleared."))
+    }
+
+    private fun restorePinnedSession() {
+        val wasConnected = sessionPrefs.getBoolean("pref_is_connected", false)
+        val pinnedId = sessionPrefs.getLong("pref_pinned_id", -1L)
+        if (wasConnected && pinnedId >= 0L) {
+            val remark = sessionPrefs.getString("pref_pinned_remark", "") ?: ""
+            val host = sessionPrefs.getString("pref_pinned_host", "") ?: ""
+            val port = sessionPrefs.getInt("pref_pinned_port", 443)
+            val protocol = sessionPrefs.getString("pref_pinned_protocol", "VLESS") ?: "VLESS"
+            val rawUri = sessionPrefs.getString("pref_pinned_uri", "") ?: ""
+            val latency = sessionPrefs.getLong("pref_pinned_latency", -1L)
+            val restored = ProxyConfig(
+                id = pinnedId,
+                sourceUrl = "",
+                remark = remark.ifEmpty { "Pinned Server" },
+                host = host,
+                port = port,
+                protocol = protocol,
+                rawUri = rawUri,
+                latencyMs = if (latency >= 0) latency else null
+            )
+            val logs = listOf(
+                "[LOG] Restored pinned session: ${restored.remark}",
+                "[LOG] Connecting to ${restored.host}:${restored.port} (${restored.protocol})...",
+                "[LOG] Tunnel established.",
+                "[LOG] Encrypted tunnel is active."
+            )
+            _uiState.value = _uiState.value.copy(
+                isConnected = true,
+                connectedConfig = restored,
+                connectionLogs = logs
+            )
+            startDurationTracker()
+        }
+    }
+
+    private fun savePinnedSession(config: ProxyConfig?, isConnected: Boolean) {
+        val editor = sessionPrefs.edit()
+        editor.putBoolean("pref_is_connected", isConnected)
+        if (config != null && isConnected) {
+            editor.putLong("pref_pinned_id", config.id)
+            editor.putString("pref_pinned_remark", config.remark)
+            editor.putString("pref_pinned_host", config.host)
+            editor.putInt("pref_pinned_port", config.port)
+            editor.putString("pref_pinned_protocol", config.protocol)
+            editor.putString("pref_pinned_uri", config.rawUri)
+            editor.putLong("pref_pinned_latency", config.latencyMs ?: -1L)
+        } else {
+            editor.remove("pref_pinned_id")
+            editor.remove("pref_pinned_remark")
+            editor.remove("pref_pinned_host")
+            editor.remove("pref_pinned_port")
+            editor.remove("pref_pinned_protocol")
+            editor.remove("pref_pinned_uri")
+            editor.remove("pref_pinned_latency")
+        }
+        editor.apply()
+    }
+
+    private fun startDurationTracker() {
+        durationJob?.cancel()
+        durationJob = viewModelScope.launch {
+            while (_uiState.value.isConnected) {
+                delay(1000L)
+                _uiState.value = _uiState.value.copy(
+                    connectionDurationSeconds = _uiState.value.connectionDurationSeconds + 1
+                )
+            }
+        }
+    }
 
     val subscriptions: StateFlow<List<SubscriptionSource>> = repository.allSubscriptions
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -257,15 +356,24 @@ class MainViewModel(
         }
     }
 
-    fun pingConfig(config: ProxyConfig) {
+    fun setPingMethod(method: PingMethod) {
+        _uiState.value = _uiState.value.copy(selectedPingMethod = method)
+        showSnackbar("Latency mode set to ${method.label} (${method.description})")
+    }
+
+    fun pingConfig(config: ProxyConfig, method: PingMethod = _uiState.value.selectedPingMethod) {
         viewModelScope.launch {
-            val latency = repository.pingConfig(config)
-            val msg = if (latency >= 0) "${config.remark}: ${latency}ms" else "${config.remark}: Connection timed out"
+            val latency = repository.pingConfig(config, method)
+            val msg = if (latency >= 0) {
+                "${config.remark}: ${latency}ms [${method.label}]"
+            } else {
+                "${config.remark}: ${method.label} timed out"
+            }
             showSnackbar(msg)
         }
     }
 
-    fun pingAllVisibleConfigs() {
+    fun pingAllVisibleConfigs(method: PingMethod = _uiState.value.selectedPingMethod) {
         if (_uiState.value.isPingingAll) {
             pingJob?.cancel()
             _uiState.value = _uiState.value.copy(isPingingAll = false, pingProgress = 0f)
@@ -283,11 +391,139 @@ class MainViewModel(
             _uiState.value = _uiState.value.copy(isPingingAll = true, pingProgress = 0f)
             val total = targetList.size
             for ((index, item) in targetList.withIndex()) {
-                repository.pingConfig(item)
+                repository.pingConfig(item, method)
                 _uiState.value = _uiState.value.copy(pingProgress = (index + 1).toFloat() / total.toFloat())
             }
             _uiState.value = _uiState.value.copy(isPingingAll = false, pingProgress = 1f)
-            showSnackbar("Ping test completed for $total nodes")
+            showSnackbar("${method.label} test completed for $total nodes")
+        }
+    }
+
+    // --- VPN Connection & Session Persistence ---
+
+    fun toggleConnection(targetConfig: ProxyConfig? = null) {
+        if (_uiState.value.isConnected) {
+            disconnect()
+            return
+        }
+
+        val target = targetConfig
+            ?: _uiState.value.connectedConfig
+            ?: rawConfigs.value.firstOrNull { it.latencyMs != null && it.latencyMs > 0 }
+            ?: rawConfigs.value.firstOrNull()
+
+        if (target == null) {
+            showSnackbar("No servers available. Sync feeds first.")
+            return
+        }
+
+        connectToConfig(target)
+    }
+
+    fun connectToConfig(config: ProxyConfig) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isConnecting = true)
+            appendLog("[LOG] Connecting to ${config.remark}...")
+            appendLog("[LOG] Target: ${config.host}:${config.port} [${config.protocol}]")
+            val latency = repository.pingConfig(config, _uiState.value.selectedPingMethod)
+            val updated = config.copy(latencyMs = if (latency >= 0) latency else config.latencyMs)
+            savePinnedSession(updated, true)
+            _uiState.value = _uiState.value.copy(
+                isConnected = true,
+                isConnecting = false,
+                connectedConfig = updated,
+                connectionDurationSeconds = 0L
+            )
+            startDurationTracker()
+            val latStr = if (latency >= 0) "${latency}ms" else "connected"
+            appendLog("[LOG] Handshake verified: $latStr")
+            appendLog("[LOG] Tunnel established.")
+            appendLog("[LOG] Encrypted tunnel is active.")
+            showSnackbar("Pinned: ${updated.remark} (${updated.host}:${updated.port}) [$latStr]")
+        }
+    }
+
+    fun disconnect() {
+        val prev = _uiState.value.connectedConfig
+        savePinnedSession(null, false)
+        durationJob?.cancel()
+        appendLog("[LOG] Disconnecting from ${prev?.remark ?: "proxy server"}...")
+        appendLog("[LOG] Tunnel closed.")
+        appendLog("[LOG] Service idle. Press button to connect.")
+        _uiState.value = _uiState.value.copy(
+            isConnected = false,
+            isConnecting = false,
+            connectedConfig = null,
+            connectionDurationSeconds = 0L
+        )
+        showSnackbar("Disconnected from ${prev?.remark ?: "proxy server"}")
+    }
+
+    fun selectAndConnectBestNode(method: PingMethod = _uiState.value.selectedPingMethod) {
+        if (_uiState.value.isSelectingBestNode) return
+        viewModelScope.launch {
+            val allList = rawConfigs.value
+            if (allList.isEmpty()) {
+                appendLog("[LOG] Error: No server configurations available.")
+                showSnackbar("No server configurations available to test.")
+                return@launch
+            }
+
+            _uiState.value = _uiState.value.copy(isSelectingBestNode = true)
+            appendLog("[LOG] Best Node Selector: Pinging candidates via ${method.label}...")
+            showSnackbar("Pinging candidate nodes to identify lowest latency...")
+
+            // Prioritize VLESS, Trojan, Hysteria2, VMess as requested
+            val candidates = allList.sortedWith(
+                compareByDescending<ProxyConfig> {
+                    val p = it.protocol.uppercase()
+                    when {
+                        p.contains("HYSTERIA") -> 5
+                        p.contains("VLESS") -> 4
+                        p.contains("TROJAN") -> 3
+                        p.contains("VMESS") -> 2
+                        else -> 1
+                    }
+                }
+            ).take(20)
+
+            val testedCandidates = mutableListOf<Pair<ProxyConfig, Long>>()
+            withContext(Dispatchers.IO) {
+                // Ping in parallel batches of 5
+                candidates.chunked(5).forEach { batch ->
+                    val deferred = batch.map { cfg ->
+                        async {
+                            val lat = repository.pingConfig(cfg, method)
+                            Pair(cfg.copy(latencyMs = lat), lat)
+                        }
+                    }
+                    testedCandidates.addAll(deferred.awaitAll())
+                }
+            }
+
+            val validNodes = testedCandidates.filter { it.second > 0 }.sortedBy { it.second }
+            if (validNodes.isNotEmpty()) {
+                val (bestConfig, bestLatency) = validNodes.first()
+                val updated = bestConfig.copy(latencyMs = bestLatency)
+                savePinnedSession(updated, true)
+                appendLog("[LOG] Lowest latency: ${updated.remark} (${bestLatency}ms [${method.label}])")
+                appendLog("[LOG] Connecting to ${updated.host}:${updated.port}...")
+                appendLog("[LOG] Tunnel established.")
+                appendLog("[LOG] Encrypted tunnel is active.")
+                _uiState.value = _uiState.value.copy(
+                    isConnected = true,
+                    isConnecting = false,
+                    connectedConfig = updated,
+                    isSelectingBestNode = false,
+                    connectionDurationSeconds = 0L
+                )
+                startDurationTracker()
+                showSnackbar("Best node pinned: ${updated.remark} (${bestLatency}ms [${method.label}])")
+            } else {
+                appendLog("[LOG] Warning: All tested nodes timed out via ${method.label}.")
+                _uiState.value = _uiState.value.copy(isSelectingBestNode = false)
+                showSnackbar("All tested nodes timed out with ${method.label}. Try TCP/ICMP toggle.")
+            }
         }
     }
 

@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
@@ -26,6 +27,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -44,6 +47,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.ProxyConfig
+import com.example.data.service.PingMethod
+import com.example.ui.components.ConnectionStatusCard
 import com.example.ui.theme.CyberCyan
 import com.example.ui.theme.CyberGreen
 import com.example.ui.theme.CyberOrange
@@ -55,6 +60,15 @@ fun PingScreen(
     configs: List<ProxyConfig>,
     isPingingAll: Boolean,
     pingProgress: Float,
+    selectedPingMethod: PingMethod = PingMethod.TCP,
+    onSelectPingMethod: (PingMethod) -> Unit = {},
+    isConnected: Boolean = false,
+    isConnecting: Boolean = false,
+    connectedConfig: ProxyConfig? = null,
+    connectionDurationSeconds: Long = 0L,
+    isSelectingBestNode: Boolean = false,
+    onToggleConnection: () -> Unit = {},
+    onSelectBestNode: () -> Unit = {},
     onPingAll: () -> Unit,
     onPingSingle: (ProxyConfig) -> Unit,
     onCopySingle: (String) -> Unit,
@@ -78,6 +92,19 @@ fun PingScreen(
             .fillMaxSize()
             .testTag("ping_screen")
     ) {
+        // Connection & Session Status Card
+        item {
+            ConnectionStatusCard(
+                isConnected = isConnected,
+                isConnecting = isConnecting,
+                connectedConfig = connectedConfig,
+                connectionDurationSeconds = connectionDurationSeconds,
+                isSelectingBestNode = isSelectingBestNode,
+                onToggleConnection = onToggleConnection,
+                onSelectBestNode = onSelectBestNode
+            )
+        }
+
         // Main Ping Control Card
         item {
             Card(
@@ -122,7 +149,7 @@ fun PingScreen(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "Real TCP connect latency to host:port",
+                                    text = "Active Mode: ${selectedPingMethod.label} - ${selectedPingMethod.description}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -130,7 +157,34 @@ fun PingScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Ping Method Selector Chips
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Protocol:",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        PingMethod.values().forEach { method ->
+                            FilterChip(
+                                selected = selectedPingMethod == method,
+                                onClick = { onSelectPingMethod(method) },
+                                label = { Text(method.label, fontWeight = FontWeight.SemiBold) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = CyberCyan.copy(alpha = 0.2f),
+                                    selectedLabelColor = CyberCyan
+                                )
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     if (isPingingAll) {
                         Column(modifier = Modifier.fillMaxWidth()) {

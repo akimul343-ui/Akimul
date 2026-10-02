@@ -7,6 +7,9 @@ import com.example.data.db.SubscriptionDao
 import com.example.data.model.ProxyConfig
 import com.example.data.model.SubscriptionSource
 import com.example.data.parser.V2RayParser
+import com.example.data.service.LatencyTestService
+import com.example.data.service.PingMethod
+import com.example.data.service.PingResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -161,30 +164,22 @@ class ProxyRepository(
         }
     }
 
-    suspend fun pingConfig(config: ProxyConfig): Long {
-        return withContext(Dispatchers.IO) {
-            val host = config.host
-            val port = if (config.port in 1..65535) config.port else 443
+    private val latencyTestService = LatencyTestService()
 
-            val start = System.currentTimeMillis()
-            var socket: Socket? = null
-            try {
-                socket = Socket()
-                socket.soTimeout = 2500
-                val address = InetSocketAddress(host, port)
-                socket.connect(address, 2500)
-                val latency = System.currentTimeMillis() - start
-                proxyConfigDao.updateLatency(config.id, latency)
-                latency
-            } catch (e: Exception) {
-                proxyConfigDao.updateLatency(config.id, -1L)
-                -1L
-            } finally {
-                try {
-                    socket?.close()
-                } catch (ignored: Exception) {}
-            }
+    suspend fun pingConfig(config: ProxyConfig, method: PingMethod = PingMethod.TCP): Long {
+        val result = latencyTestService.testConfig(config, method)
+        withContext(Dispatchers.IO) {
+            proxyConfigDao.updateLatency(config.id, result.latencyMs)
         }
+        return result.latencyMs
+    }
+
+    suspend fun testLatencyDetailed(config: ProxyConfig, method: PingMethod = PingMethod.TCP): PingResult {
+        val result = latencyTestService.testConfig(config, method)
+        withContext(Dispatchers.IO) {
+            proxyConfigDao.updateLatency(config.id, result.latencyMs)
+        }
+        return result
     }
 
     fun generateMergedText(configs: List<ProxyConfig>): String {

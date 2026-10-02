@@ -3,6 +3,7 @@ package com.example.ui.screens
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Star
@@ -69,6 +71,7 @@ import com.example.R
 import com.example.data.model.ProxyConfig
 import com.example.ui.SortOption
 import com.example.ui.UiState
+import com.example.ui.components.ConnectionStatusCard
 import com.example.ui.theme.CyberCyan
 import com.example.ui.theme.CyberGreen
 import com.example.ui.theme.CyberOrange
@@ -87,7 +90,10 @@ fun ConfigsScreen(
     onPingConfig: (ProxyConfig) -> Unit,
     onToggleFavorite: (ProxyConfig) -> Unit,
     onCopyConfig: (String) -> Unit,
-    onSyncAll: () -> Unit
+    onSyncAll: () -> Unit,
+    onToggleConnection: () -> Unit = {},
+    onSelectBestNode: () -> Unit = {},
+    onConnectNode: (ProxyConfig) -> Unit = {}
 ) {
     val context = LocalContext.current
     var showSortMenu by remember { mutableStateOf(false) }
@@ -272,10 +278,26 @@ fun ConfigsScreen(
 
         // Main List or Empty State
         if (configs.isEmpty()) {
-            EmptyConfigsView(
-                isSearching = uiState.searchQuery.isNotEmpty() || uiState.selectedProtocol != "All" || uiState.onlyFavorites,
-                onSyncAll = onSyncAll
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+            ) {
+                ConnectionStatusCard(
+                    isConnected = uiState.isConnected,
+                    isConnecting = uiState.isConnecting,
+                    connectedConfig = uiState.connectedConfig,
+                    connectionDurationSeconds = uiState.connectionDurationSeconds,
+                    isSelectingBestNode = uiState.isSelectingBestNode,
+                    onToggleConnection = onToggleConnection,
+                    onSelectBestNode = onSelectBestNode,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+                EmptyConfigsView(
+                    isSearching = uiState.searchQuery.isNotEmpty() || uiState.selectedProtocol != "All" || uiState.onlyFavorites,
+                    onSyncAll = onSyncAll
+                )
+            }
         } else {
             LazyColumn(
                 contentPadding = PaddingValues(16.dp),
@@ -284,6 +306,20 @@ fun ConfigsScreen(
                     .fillMaxSize()
                     .testTag("configs_list")
             ) {
+                // Main Connection Status Card
+                item {
+                    ConnectionStatusCard(
+                        isConnected = uiState.isConnected,
+                        isConnecting = uiState.isConnecting,
+                        connectedConfig = uiState.connectedConfig,
+                        connectionDurationSeconds = uiState.connectionDurationSeconds,
+                        isSelectingBestNode = uiState.isSelectingBestNode,
+                        onToggleConnection = onToggleConnection,
+                        onSelectBestNode = onSelectBestNode,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
+
                 // Header statistics banner
                 item {
                     ConfigsSummaryHeader(
@@ -294,8 +330,13 @@ fun ConfigsScreen(
                 }
 
                 items(configs, key = { it.id }) { config ->
+                    val isPinned = uiState.isConnected && uiState.connectedConfig?.id == config.id
                     ConfigItemCard(
                         config = config,
+                        isPinned = isPinned,
+                        onConnectToggle = {
+                            if (isPinned) onToggleConnection() else onConnectNode(config)
+                        },
                         onClick = { onConfigClick(config) },
                         onPing = { onPingConfig(config) },
                         onToggleFavorite = { onToggleFavorite(config) },
@@ -364,6 +405,8 @@ fun ConfigsSummaryHeader(
 @Composable
 fun ConfigItemCard(
     config: ProxyConfig,
+    isPinned: Boolean = false,
+    onConnectToggle: () -> Unit = {},
     onClick: () -> Unit,
     onPing: () -> Unit,
     onToggleFavorite: () -> Unit,
@@ -386,7 +429,8 @@ fun ConfigItemCard(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        border = if (isPinned) BorderStroke(1.5.dp, CyberGreen) else null,
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isPinned) 4.dp else 2.dp)
     ) {
         Column(
             modifier = Modifier
@@ -415,6 +459,21 @@ fun ConfigItemCard(
                             fontWeight = FontWeight.Bold,
                             fontSize = 11.sp
                         )
+                    }
+
+                    if (isPinned) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = CyberGreen.copy(alpha = 0.2f)
+                        ) {
+                            Text(
+                                text = "ACTIVE",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                color = CyberGreen
+                            )
+                        }
                     }
 
                     if (config.network.isNotBlank() && config.network != "none") {
@@ -510,11 +569,39 @@ fun ConfigItemCard(
                 // Latency Badge
                 LatencyPill(latencyMs = config.latencyMs)
 
-                // Actions: Ping & Copy
+                // Actions: Connect, Ping & Copy
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Quick Connect / Pinned Toggle Button
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isPinned) CyberGreen.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier
+                            .clickable(onClick = onConnectToggle)
+                            .testTag("connect_node_button_${config.id}")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PowerSettingsNew,
+                                contentDescription = if (isPinned) "Active Node" else "Connect Node",
+                                modifier = Modifier.size(13.dp),
+                                tint = if (isPinned) CyberGreen else MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (isPinned) "Pinned" else "Use",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isPinned) CyberGreen else MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -529,15 +616,15 @@ fun ConfigItemCard(
                             Icon(
                                 imageVector = Icons.Default.NetworkCheck,
                                 contentDescription = "Ping",
-                                modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.primary
+                                modifier = Modifier.size(13.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(3.dp))
                             Text(
                                 text = "Ping",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -556,13 +643,14 @@ fun ConfigItemCard(
                             Icon(
                                 imageVector = Icons.Default.ContentCopy,
                                 contentDescription = "Copy URI",
-                                modifier = Modifier.size(14.dp),
+                                modifier = Modifier.size(13.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(3.dp))
                             Text(
                                 text = "Copy",
                                 fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
