@@ -6,3 +6,17 @@ plugins {
   alias(libs.plugins.secrets) apply false
   alias(libs.plugins.google.services) apply false
 }
+
+// Auto-restore debug.keystore from debug.keystore.base64 if missing (e.g., in CI environments like GitHub Actions)
+val debugKeystore = file("${rootDir}/debug.keystore")
+val debugKeystoreBase64 = file("${rootDir}/debug.keystore.base64")
+if (!debugKeystore.exists() && debugKeystoreBase64.exists()) {
+  try {
+    val cleaned = debugKeystoreBase64.readText().replace("\r", "").replace("\n", "").trim()
+    val decoded = java.util.Base64.getDecoder().decode(cleaned)
+    debugKeystore.writeBytes(decoded)
+  } catch (e: Exception) {
+    logger.warn("Unable to restore debug.keystore: ${e.message}")
+  }
+}
+

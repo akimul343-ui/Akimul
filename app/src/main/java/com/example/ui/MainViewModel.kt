@@ -355,7 +355,8 @@ class MainViewModel(
     class Factory(private val application: Application) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            val db = AppDatabase.getDatabase(application, kotlinx.coroutines.GlobalScope)
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+            val db = AppDatabase.getDatabase(application, scope)
             val repository = ProxyRepository(db.subscriptionDao(), db.proxyConfigDao())
             return MainViewModel(application, repository) as T
         }
