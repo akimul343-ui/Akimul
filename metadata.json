@@ -1,0 +1,6 @@
+{
+  "name": "RayCollector",
+  "description": "Aggregate, merge, test latency, and manage V2Ray/Xray proxy subscriptions from multiple sources.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
