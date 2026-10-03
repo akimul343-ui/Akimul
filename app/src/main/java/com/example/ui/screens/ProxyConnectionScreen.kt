@@ -75,9 +75,12 @@ fun ProxyConnectionScreen(
     allConfigs: List<ProxyConfig>,
     logs: List<String>,
     isSelectingBestNode: Boolean,
+    isTestingReachability: Boolean = false,
+    facebookReachabilityMs: Long? = null,
     onToggleConnection: () -> Unit,
     onSelectNode: (ProxyConfig) -> Unit,
     onSelectBestNode: () -> Unit,
+    onTestFacebookReachability: () -> Unit = {},
     onClearLogs: () -> Unit
 ) {
     var isDropdownExpanded by remember { mutableStateOf(false) }
@@ -252,6 +255,51 @@ fun ProxyConnectionScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "Best Node Selector (Lowest Latency)",
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Facebook & Web Access Test Button
+        OutlinedButton(
+            onClick = onTestFacebookReachability,
+            enabled = !isTestingReachability,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("test_facebook_reachability_btn"),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = if (facebookReachabilityMs != null && facebookReachabilityMs > 0) CyberGreen else MaterialTheme.colorScheme.onSurfaceVariant
+            ),
+            border = BorderStroke(
+                1.dp,
+                if (facebookReachabilityMs != null && facebookReachabilityMs > 0) CyberGreen.copy(alpha = 0.7f) else MaterialTheme.colorScheme.outlineVariant
+            )
+        ) {
+            if (isTestingReachability) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    strokeWidth = 2.dp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Testing Facebook Reachability...")
+            } else {
+                Icon(
+                    imageVector = Icons.Default.Public,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                val statusText = when {
+                    facebookReachabilityMs == null -> "Test Facebook / Internet Access"
+                    facebookReachabilityMs < 0 -> "Facebook: Unreachable (Tap to Retry)"
+                    else -> "Facebook: Accessible (${facebookReachabilityMs} ms)"
+                }
+                Text(
+                    text = statusText,
                     fontWeight = FontWeight.SemiBold
                 )
             }

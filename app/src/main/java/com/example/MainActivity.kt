@@ -1,10 +1,15 @@
 package com.example
 
+import android.app.Activity
 import android.app.Application
+import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -47,7 +52,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,6 +67,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.model.ProxyConfig
 import com.example.ui.MainViewModel
 import com.example.ui.components.AddSourceDialog
 import com.example.ui.components.ConfigDetailDialog
@@ -98,6 +106,66 @@ fun RayCollectorApp(viewModel: MainViewModel) {
     val rawConfigs by viewModel.rawConfigs.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
+
+    var pendingConfigToConnect by remember { mutableStateOf<ProxyConfig?>(null) }
+
+    val vpnPrepareLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            viewModel.appendLog("[LOG] System VPN permission granted by user.")
+            val target = pendingConfigToConnect
+            if (target != null) {
+                viewModel.connectToConfig(target)
+            } else {
+                viewModel.toggleConnection()
+            }
+            pendingConfigToConnect = null
+        } else {
+            viewModel.appendLog("[LOG] System VPN permission was cancelled.")
+            viewModel.showSnackbar("VPN permission required to create connection.")
+            pendingConfigToConnect = null
+        }
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* post notifications status */ }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    val handleConnectRequest: (ProxyConfig?) -> Unit = { target ->
+        if (uiState.isConnected) {
+            viewModel.disconnect()
+        } else {
+            val prepareIntent = VpnService.prepare(context)
+            if (prepareIntent != null) {
+                pendingConfigToConnect = target
+                viewModel.appendLog("[LOG] Requesting system VPN consent dialog...")
+                vpnPrepareLauncher.launch(prepareIntent)
+            } else {
+                if (target != null) {
+                    viewModel.connectToConfig(target)
+                } else {
+                    viewModel.toggleConnection()
+                }
+            }
+        }
+    }
+
+    val handleBestNodeRequest: () -> Unit = {
+        val prepareIntent = VpnService.prepare(context)
+        if (prepareIntent != null) {
+            viewModel.appendLog("[LOG] Requesting system VPN consent dialog...")
+            vpnPrepareLauncher.launch(prepareIntent)
+        } else {
+            viewModel.selectAndConnectBestNode()
+        }
+    }
 
     LaunchedEffect(uiState.snackbarMessage) {
         val msg = uiState.snackbarMessage
@@ -295,9 +363,12 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                     allConfigs = rawConfigs,
                     logs = uiState.connectionLogs,
                     isSelectingBestNode = uiState.isSelectingBestNode,
-                    onToggleConnection = { viewModel.toggleConnection() },
-                    onSelectNode = { viewModel.connectToConfig(it) },
-                    onSelectBestNode = { viewModel.selectAndConnectBestNode() },
+                    isTestingReachability = uiState.isTestingReachability,
+                    facebookReachabilityMs = uiState.facebookReachabilityMs,
+                    onToggleConnection = { handleConnectRequest(null) },
+                    onSelectNode = { handleConnectRequest(it) },
+                    onSelectBestNode = { handleBestNodeRequest() },
+                    onTestFacebookReachability = { viewModel.testFacebookReachability() },
                     onClearLogs = { viewModel.clearLogs() }
                 )
                 1 -> ConfigsScreen(
@@ -312,9 +383,9 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                     onToggleFavorite = { viewModel.toggleFavorite(it) },
                     onCopyConfig = { viewModel.copyToClipboard(context, it) },
                     onSyncAll = { viewModel.syncAllSources() },
-                    onToggleConnection = { viewModel.toggleConnection() },
-                    onSelectBestNode = { viewModel.selectAndConnectBestNode() },
-                    onConnectNode = { viewModel.connectToConfig(it) }
+                    onToggleConnection = { handleConnectRequest(null) },
+                    onSelectBestNode = { handleBestNodeRequest() },
+                    onConnectNode = { handleConnectRequest(it) }
                 )
                 2 -> SourcesScreen(
                     sources = subscriptions,
@@ -337,8 +408,8 @@ fun RayCollectorApp(viewModel: MainViewModel) {
                     connectedConfig = uiState.connectedConfig,
                     connectionDurationSeconds = uiState.connectionDurationSeconds,
                     isSelectingBestNode = uiState.isSelectingBestNode,
-                    onToggleConnection = { viewModel.toggleConnection() },
-                    onSelectBestNode = { viewModel.selectAndConnectBestNode() },
+                    onToggleConnection = { handleConnectRequest(null) },
+                    onSelectBestNode = { handleBestNodeRequest() },
                     onPingAll = { viewModel.pingAllVisibleConfigs() },
                     onPingSingle = { viewModel.pingConfig(it) },
                     onCopySingle = { viewModel.copyToClipboard(context, it) },

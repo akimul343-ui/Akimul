@@ -14,6 +14,7 @@ import com.example.data.model.ProxyConfig
 import com.example.data.model.SubscriptionSource
 import com.example.data.repository.ProxyRepository
 import com.example.data.service.PingMethod
+import com.example.data.service.RayVpnService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -29,6 +30,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
 
 enum class SortOption {
     DEFAULT,
@@ -58,7 +61,9 @@ data class UiState(
     val connectedConfig: ProxyConfig? = null,
     val connectionDurationSeconds: Long = 0L,
     val isSelectingBestNode: Boolean = false,
-    val connectionLogs: List<String> = listOf("[LOG] Service idle. Press button to connect.")
+    val connectionLogs: List<String> = listOf("[LOG] Service idle. Press button to connect."),
+    val isTestingReachability: Boolean = false,
+    val facebookReachabilityMs: Long? = null
 )
 
 class MainViewModel(
@@ -75,6 +80,18 @@ class MainViewModel(
 
     init {
         restorePinnedSession()
+        viewModelScope.launch {
+            RayVpnService.isVpnRunning.collect { isRunning ->
+                if (!isRunning && _uiState.value.isConnected) {
+                    _uiState.value = _uiState.value.copy(
+                        isConnected = false,
+                        connectedConfig = null,
+                        connectionDurationSeconds = 0L
+                    )
+                    appendLog("[LOG] VPN tunnel disconnected.")
+                }
+            }
+        }
     }
 
     fun appendLog(log: String) {
@@ -428,6 +445,16 @@ class MainViewModel(
             val latency = repository.pingConfig(config, _uiState.value.selectedPingMethod)
             val updated = config.copy(latencyMs = if (latency >= 0) latency else config.latencyMs)
             savePinnedSession(updated, true)
+
+            // Start Android system VPN tunnel service
+            RayVpnService.startVpn(
+                context = getApplication(),
+                remark = updated.remark,
+                host = updated.host,
+                port = updated.port,
+                protocol = updated.protocol
+            )
+
             _uiState.value = _uiState.value.copy(
                 isConnected = true,
                 isConnecting = false,
@@ -437,9 +464,10 @@ class MainViewModel(
             startDurationTracker()
             val latStr = if (latency >= 0) "${latency}ms" else "connected"
             appendLog("[LOG] Handshake verified: $latStr")
-            appendLog("[LOG] Tunnel established.")
+            appendLog("[LOG] Virtual TUN interface (tun0) established.")
+            appendLog("[LOG] VPN Key active in status bar 🔑")
             appendLog("[LOG] Encrypted tunnel is active.")
-            showSnackbar("Pinned: ${updated.remark} (${updated.host}:${updated.port}) [$latStr]")
+            showSnackbar("VPN Connected: ${updated.remark} [$latStr]")
         }
     }
 
@@ -447,8 +475,12 @@ class MainViewModel(
         val prev = _uiState.value.connectedConfig
         savePinnedSession(null, false)
         durationJob?.cancel()
+
+        // Stop Android system VPN tunnel service
+        RayVpnService.stopVpn(getApplication())
+
         appendLog("[LOG] Disconnecting from ${prev?.remark ?: "proxy server"}...")
-        appendLog("[LOG] Tunnel closed.")
+        appendLog("[LOG] Virtual TUN interface closed.")
         appendLog("[LOG] Service idle. Press button to connect.")
         _uiState.value = _uiState.value.copy(
             isConnected = false,
@@ -508,7 +540,18 @@ class MainViewModel(
                 savePinnedSession(updated, true)
                 appendLog("[LOG] Lowest latency: ${updated.remark} (${bestLatency}ms [${method.label}])")
                 appendLog("[LOG] Connecting to ${updated.host}:${updated.port}...")
-                appendLog("[LOG] Tunnel established.")
+
+                // Start Android system VPN tunnel service
+                RayVpnService.startVpn(
+                    context = getApplication(),
+                    remark = updated.remark,
+                    host = updated.host,
+                    port = updated.port,
+                    protocol = updated.protocol
+                )
+
+                appendLog("[LOG] Virtual TUN interface (tun0) established.")
+                appendLog("[LOG] VPN Key active in status bar 🔑")
                 appendLog("[LOG] Encrypted tunnel is active.")
                 _uiState.value = _uiState.value.copy(
                     isConnected = true,
@@ -523,6 +566,44 @@ class MainViewModel(
                 appendLog("[LOG] Warning: All tested nodes timed out via ${method.label}.")
                 _uiState.value = _uiState.value.copy(isSelectingBestNode = false)
                 showSnackbar("All tested nodes timed out with ${method.label}. Try TCP/ICMP toggle.")
+            }
+        }
+    }
+
+    fun testFacebookReachability() {
+        if (_uiState.value.isTestingReachability) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isTestingReachability = true)
+            appendLog("[LOG] Checking reachability to Facebook (www.facebook.com:443)...")
+            val start = System.currentTimeMillis()
+            val result = withContext(Dispatchers.IO) {
+                var socket: Socket? = null
+                try {
+                    socket = Socket()
+                    socket.soTimeout = 4000
+                    socket.connect(InetSocketAddress("www.facebook.com", 443), 4000)
+                    val elapsed = System.currentTimeMillis() - start
+                    elapsed
+                } catch (e: Exception) {
+                    -1L
+                } finally {
+                    try {
+                        socket?.close()
+                    } catch (ignored: Exception) {}
+                }
+            }
+
+            _uiState.value = _uiState.value.copy(
+                isTestingReachability = false,
+                facebookReachabilityMs = result
+            )
+
+            if (result >= 0) {
+                appendLog("[LOG] Facebook Reachability: OK (${result}ms). Direct connection verified.")
+                showSnackbar("Facebook reachable: ${result}ms")
+            } else {
+                appendLog("[LOG] Facebook Reachability: Failed/Timeout. Check proxy node or network.")
+                showSnackbar("Facebook unreachable via current connection.")
             }
         }
     }
